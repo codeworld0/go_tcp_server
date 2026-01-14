@@ -30,6 +30,10 @@ package main
 import (
     "context"
     "log"
+    "os"
+    "os/signal"
+    "syscall"
+    "time"
     "github.com/example/tcpserver/pkg/tcpserver"
 )
 
@@ -40,15 +44,18 @@ func main() {
         Logger:         tcpserver.NewNoopLogger(),
     })
 
+    // Устанавливаем таймаут для graceful shutdown
+    server.SetGracefulTimeout(5 * time.Second)
+
     // Создаем парсер для байтовых данных
     parser := tcpserver.NewByteParser()
 
     // Запускаем сервер
-    err := server.Start(context.Background(), parser, 
+    done, err := server.Start(context.Background(), parser, 
         func(conn *tcpserver.Connection[[]byte]) tcpserver.ConnectionHandlers[[]byte] {
             return tcpserver.ConnectionHandlers[[]byte]{
-                OnRead: func(c *tcpserver.Connection[[]byte], data []byte) {
-                    c.Write(data) // Echo обратно
+                OnRead: func(ctx context.Context, c *tcpserver.Connection[[]byte], data []byte) {
+                    c.Write(ctx, data) // Echo обратно
                 },
                 OnError: func(c *tcpserver.Connection[[]byte], err error) {
                     log.Printf("Error: %v", err)
@@ -60,8 +67,16 @@ func main() {
         log.Fatal(err)
     }
 
-    // Graceful shutdown через 5 секунд
-    server.Stop(5 * time.Second)
+    // Ожидаем сигнал завершения
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+    <-sigChan
+
+    // Останавливаем сервер
+    server.Stop()
+    
+    // Ждем полной остановки (все соединения закрыты, все горутины завершены)
+    <-done
 }
 ```
 
@@ -107,10 +122,10 @@ type ProtocolParser[T any] interface {
 
 #### 4. ConnectionHandlers[T]
 Набор callback-функций для обработки событий:
-- `OnRead` - получение данных
-- `OnError` - обработка ошибок
-- `OnStop` - graceful shutdown
-- `OnClosed` - закрытие соединения
+- `OnRead(ctx context.Context, conn *Connection[T], data T)` - получение данных
+- `OnError(conn *Connection[T], err error)` - обработка ошибок
+- `OnStop(conn *Connection[T])` - graceful shutdown
+- `OnClosed(conn *Connection[T])` - закрытие соединения
 
 ## Продвинутое использование
 
@@ -148,23 +163,26 @@ func (p *MyProtocol) WritePacket(conn net.Conn, msg Message) error {
 // Использование
 server := tcpserver.NewServer[Message](":8080", config)
 parser := &MyProtocol{}
-server.Start(ctx, parser, onAcceptHandler)
+done, err := server.Start(ctx, parser, onAcceptHandler)
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 ### Смена обработчиков после авторизации
 
 ```go
-server.Start(ctx, parser, func(conn *Connection[Message]) ConnectionHandlers[Message] {
+done, err := server.Start(ctx, parser, func(conn *Connection[Message]) ConnectionHandlers[Message] {
     return ConnectionHandlers[Message]{
-        OnRead: func(c *Connection[Message], msg Message) {
+        OnRead: func(ctx context.Context, c *Connection[Message], msg Message) {
             // Проверяем авторизацию
             if c.GetUserData() == nil {
                 if msg.Type == "AUTH" && validateAuth(msg.Data) {
                     c.SetUserData("authorized")
                     c.SetHandlers(getAuthorizedHandlers()) // Меняем обработчики
-                    c.Write(Message{Type: "AUTH_OK"})
+                    c.Write(ctx, Message{Type: "AUTH_OK"})
                 } else {
-                    c.Write(Message{Type: "AUTH_REQUIRED"})
+                    c.Write(ctx, Message{Type: "AUTH_REQUIRED"})
                 }
             }
         },
@@ -181,7 +199,7 @@ type UserSession struct {
     IsAdmin bool
 }
 
-OnRead: func(c *Connection[Message], msg Message) {
+OnRead: func(ctx context.Context, c *Connection[Message], msg Message) {
     session := c.GetUserData().(*UserSession)
     if session.IsAdmin {
         // Админские права
@@ -230,19 +248,30 @@ type Config struct {
 ## Graceful Shutdown
 
 ```go
-// С таймаутом - вызывает OnStop для всех соединений
-server.Stop(5 * time.Second)
+// Устанавливаем таймаут для graceful shutdown
+server.SetGracefulTimeout(5 * time.Second)
 
-// Немедленная остановка - без вызова OnStop
-server.Stop(0)
+// Останавливаем сервер
+err := server.Stop()
+
+// Ждем полной остановки (канал done закроется когда все соединения закроются)
+<-done
+```
+
+```go
+// Немедленная остановка - без graceful shutdown
+server.SetGracefulTimeout(0)
+server.Stop()
+<-done
 ```
 
 **Процесс graceful shutdown:**
 1. Закрывается listener (новые подключения не принимаются)
-2. Если timeout > 0, вызывается `OnStop` для всех соединений
-3. Ожидание timeout или закрытия всех соединений
+2. Если graceful timeout > 0: отправляется сигнал shutdown всем соединениям (вызывается `OnStop`)
+3. Ожидание graceful timeout или пока все соединения не закроются
 4. Принудительное закрытие оставшихся соединений
-5. Вызов `OnClosed` для каждого соединения
+5. Вызов `OnClosed` для каждого закрытого соединения
+6. Закрытие канала `done` для уведомления о полной остановке
 
 ## API Reference
 
@@ -252,12 +281,15 @@ server.Stop(0)
 // Создание сервера
 NewServer[T](address string, config Config) *Server[T]
 
-// Запуск сервера
+// Установка таймаута для graceful shutdown
+SetGracefulTimeout(timeout time.Duration)
+
+// Запуск сервера (возвращает канал done и ошибку)
 Start(ctx context.Context, parser ProtocolParser[T], 
-      onAccept func(*Connection[T]) ConnectionHandlers[T]) error
+      onAccept func(*Connection[T]) ConnectionHandlers[T]) (<-chan struct{}, error)
 
 // Остановка сервера
-Stop(timeout time.Duration) error
+Stop() error
 
 // Получение количества подключений
 GetConnectionCount() int64
@@ -276,13 +308,7 @@ ForEachConnection(fn func(*Connection[T]) bool)
 
 ```go
 // Асинхронная отправка данных
-Write(packet T) error
-
-// Синхронное чтение данных
-Read() (T, error)
-
-// Получение ошибки
-GetError() error
+Write(ctx context.Context, packet T) error
 
 // Смена обработчиков
 SetHandlers(handlers ConnectionHandlers[T])
@@ -291,6 +317,9 @@ SetHandlers(handlers ConnectionHandlers[T])
 SetUserData(data interface{})
 GetUserData() interface{}
 
+// Уникальный идентификатор соединения
+GetID() uint64
+
 // Информация о соединении
 RemoteAddr() net.Addr
 LocalAddr() net.Addr
@@ -298,7 +327,16 @@ IsClosed() bool
 IsShuttingDown() bool
 
 // Закрытие соединения
-Close() error
+// force: true - немедленное закрытие, false - мягкое закрытие с завершением записи
+Close(force bool) error
+
+// Управление таймаутами
+SetReadDeadline(t time.Time) error
+SetWriteDeadline(t time.Time) error
+SetDeadline(t time.Time) error
+SetReadTimeout(timeout time.Duration) error
+SetWriteTimeout(timeout time.Duration) error
+SetTimeout(timeout time.Duration) error
 ```
 
 ## Тестирование
