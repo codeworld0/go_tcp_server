@@ -262,7 +262,6 @@ func (c *Connection[T]) eventLoop() {
 				handlers.OnError(c, err)
 			}
 
-			
 			// После ошибки закрываем соединение и выходим
 			c.Close(true)
 			return
@@ -336,6 +335,11 @@ func (c *Connection[T]) GetID() uint64 {
 // RemoteAddr возвращает удаленный адрес соединения.
 func (c *Connection[T]) RemoteAddr() net.Addr {
 	return c.conn.RemoteAddr()
+}
+
+// RawConn exposes the underlying net.Conn for protocol handshakes that bypass the parser.
+func (c *Connection[T]) RawConn() net.Conn {
+	return c.conn
 }
 
 // LocalAddr возвращает локальный адрес соединения.
