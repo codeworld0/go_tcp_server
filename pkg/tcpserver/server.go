@@ -234,10 +234,6 @@ func (s *Server[T]) acceptLoop() {
 			}
 		}
 
-		// Увеличиваем WaitGroup и счетчик подключений
-		s.connWg.Add(1)
-		s.connCount.Add(1)
-
 		s.logger.Info("New connection from %s", conn.RemoteAddr())
 
 		// Обрабатываем новое подключение
@@ -254,6 +250,10 @@ func (s *Server[T]) contextMonitor() {
 
 // handleConnection обрабатывает новое подключение.
 func (s *Server[T]) handleConnection(conn net.Conn) {
+	// Увеличиваем WaitGroup и счетчик подключений
+	s.connWg.Add(1)
+	s.connCount.Add(1)
+
 	// Создаем временные обработчики для получения реальных от onAccept
 	var handlers ConnectionHandlers[T]
 
