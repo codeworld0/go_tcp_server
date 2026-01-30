@@ -2,7 +2,7 @@ package main
 
 import "log"
 
-// SimpleLogger реализует интерфейс tcpserver.Logger используя стандартный log пакет
+// SimpleLogger реализует интерфейс rltcpkit.Logger используя стандартный log пакет
 type SimpleLogger struct{}
 
 func (l *SimpleLogger) Info(msg string, args ...interface{}) {

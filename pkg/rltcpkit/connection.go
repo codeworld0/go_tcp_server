@@ -1,4 +1,4 @@
-package tcpserver
+package rltcpkit
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 )
+
 
 // connectionIDCounter - глобальный счетчик для генерации уникальных ID соединений
 var connectionIDCounter atomic.Uint64
@@ -43,11 +44,12 @@ type Connection[T any] struct {
 	userData atomic.Value // interface{}
 
 	// Управление жизненным циклом
-	ctx        context.Context
-	cancel     context.CancelFunc
-	closed     atomic.Bool
-	closeOnce  sync.Once
-	shutdownCh chan struct{} // канал для сигнала graceful shutdown
+	ctx           context.Context
+	cancel        context.CancelFunc
+	closed        atomic.Bool
+	closeOnce     sync.Once
+	readCloseOnce sync.Once
+	shutdownCh    chan struct{} // канал для сигнала graceful shutdown
 
 	// cleanupFunc вызывается когда соединение завершается (из eventLoop)
 	cleanupFunc func()
@@ -96,6 +98,9 @@ func newConnection[T any](
 // Завершается при закрытии сокета (ReadPacket вернет ошибку).
 func (c *Connection[T]) readGoroutine() {
 	defer func() {
+		c.readCloseOnce.Do(func() {
+			close(c.readChan)
+		})
 		c.logger.Info("Connection #%d read loop closed %s", c.id, c.RemoteAddr())
 	}()
 
@@ -108,6 +113,11 @@ func (c *Connection[T]) readGoroutine() {
 
 		packet, err := c.parser.ReadPacket(c.ctx, c.conn)
 		if err != nil {
+			// EOF - нормальное завершение соединения, закрываемся без ошибок
+			if errors.Is(err, io.EOF) {
+				c.logger.Info("Socket of connection #%d closed by remote peer (EOF)", c.id)
+				return
+			}
 			// Проверяем, является ли ошибка таймаутом
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
@@ -121,11 +131,8 @@ func (c *Connection[T]) readGoroutine() {
 			}
 
 			// Отправляем ошибку в канал ошибок
-			select {
-			case c.errorChan <- err:
-			case <-c.ctx.Done():
-				return
-			}
+			c.logger.Info("Connection #%d sending error to errorChan: %v", c.id, err)
+			c.errorChan <- err
 			return
 		}
 
@@ -135,11 +142,8 @@ func (c *Connection[T]) readGoroutine() {
 		}
 
 		// Отправляем прочитанный пакет в канал чтения (без вызова обработчика)
-		select {
-		case c.readChan <- packet:
-		case <-c.ctx.Done():
-			return
-		}
+		c.readChan <- packet
+
 	}
 }
 
@@ -175,6 +179,7 @@ func (c *Connection[T]) writeGoroutine() {
 // Читает из readChan, errorChan, shutdownCh и вызывает соответствующие обработчики.
 // Завершается только при явном закрытии или ошибке, НЕ при ctx.Done() (для graceful shutdown).
 func (c *Connection[T]) eventLoop() {
+	defer c.logger.Info("Connection #%d event loop finished %s", c.id, c.RemoteAddr())
 	// Внутренний WaitGroup для read/write горутин
 	var ioWg sync.WaitGroup
 
@@ -206,7 +211,6 @@ func (c *Connection[T]) eventLoop() {
 		c.conn.Close()
 
 		// Закрываем каналы
-		close(c.readChan)
 		close(c.errorChan)
 
 		// Вызываем OnClosed callback
@@ -220,41 +224,58 @@ func (c *Connection[T]) eventLoop() {
 			c.cleanupFunc()
 		}
 
+		// Устанавливаем флаг closed в самом конце, когда всё действительно завершено
+		c.closed.Store(true)
+
 		c.logger.Info("Connection #%d event loop closed %s", c.id, c.RemoteAddr())
 	}()
+
+	// Вызываем обработчик OnConnected после регистрации defer и запуска горутин
+	handlers := c.handlers.Load().(ConnectionHandlers[T])
+	if handlers.OnConnected != nil {
+		handlers.OnConnected(c.ctx, c)
+	}
 
 	shutdownCh := c.shutdownCh // локальная копия для предотвращения busy loop
 
 	for {
-		// Проверяем, закрыто ли соединение в начале каждой итерации
-		if c.closed.Load() {
+		// Проверяем контекст в начале каждой итерации
+		if c.ctx.Err() != nil {
+			c.logger.Info("Connection #%d eventLoop: context cancelled, exiting", c.id)
 			return
 		}
 
+		c.logger.Info("Connection #%d eventLoop: waiting for events (shutdownCh=%v, errorChan buffer=%d/%d, readChan buffer=%d/%d)",
+			c.id, shutdownCh != nil, len(c.errorChan), cap(c.errorChan), len(c.readChan), cap(c.readChan))
+
 		select {
 		case packet, ok := <-c.readChan:
+			c.logger.Info("Connection #%d eventLoop: received packet from readChan (ok=%v)", c.id, ok)
 			if !ok {
 				// Канал закрыт, выходим
+				if c.ctx.Err() == nil {
+					c.logger.Error("Connection #%d eventLoop: readChan closed unexpectedly (context not done)", c.id)
+				}
+				c.logger.Info("Connection #%d eventLoop: readChan closed, exiting", c.id)
 				return
 			}
 			// Вызываем обработчик OnRead
+			c.logger.Info("Connection #%d eventLoop: calling OnRead handler", c.id)
 			handlers := c.handlers.Load().(ConnectionHandlers[T])
 			if handlers.OnRead != nil {
 				handlers.OnRead(c.ctx, c, packet)
 			}
+			c.logger.Info("Connection #%d eventLoop: OnRead handler completed", c.id)
 
 		case err, ok := <-c.errorChan:
+			c.logger.Info("Connection #%d eventLoop: received error from errorChan (ok=%v, err=%v)", c.id, ok, err)
 			if !ok {
 				// Канал закрыт, выходим
+				c.logger.Info("Connection #%d eventLoop: errorChan closed, exiting", c.id)
 				return
 			}
+			c.logger.Info("Connection #%d received error from errorChan: type=%T, err=%v", c.id, err, err)
 
-			// Проверяем на EOF - это нормальное завершение соединения
-			if errors.Is(err, io.EOF) {
-				c.logger.Info("Socket of connection #%d closed by remote peer (EOF)", c.id)
-				c.Close(true)
-				return
-			}
 			c.logger.Error("Connection #%d error: %v", c.id, err)
 			// Вызываем обработчик OnError
 			handlers := c.handlers.Load().(ConnectionHandlers[T])
@@ -267,20 +288,32 @@ func (c *Connection[T]) eventLoop() {
 			return
 
 		case <-shutdownCh:
+			c.logger.Info("Connection #%d eventLoop: received shutdown signal", c.id)
 			// Вызываем обработчик OnStop синхронно
 			handlers := c.handlers.Load().(ConnectionHandlers[T])
 			if handlers.OnStop != nil {
+				c.logger.Info("Connection #%d eventLoop: calling OnStop handler", c.id)
 				handlers.OnStop(c)
-			}
-			// Устанавливаем канал в nil, чтобы этот case больше не срабатывал
-			shutdownCh = nil
-
-		case <-c.ctx.Done():
-			// Контекст отменён - проверяем, закрыто ли соединение
-			if c.closed.Load() {
+				c.logger.Info("Connection #%d eventLoop: OnStop handler completed", c.id)
+			} else {
+				// Если обработчик OnStop не установлен, сразу закрываем соединение
+				c.logger.Info("Connection #%d eventLoop: no OnStop handler, closing connection", c.id)
+				c.Close(false) // мягкое закрытие для завершения отправки буферизованных данных
 				return
 			}
-			// Если не закрыто, продолжаем работать для graceful shutdown
+			// Устанавливаем канал в nil, чтобы этот case больше не срабатывал
+			c.logger.Info("Connection #%d eventLoop: setting shutdownCh to nil", c.id)
+			shutdownCh = nil
+			//Временно закоментировано
+			// case <-c.ctx.Done():
+			// 	c.logger.Info("Connection #%d eventLoop: context done (closed=%v)", c.id, c.closed.Load())
+			// 	// Контекст отменён - проверяем, закрыто ли соединение
+			// 	if c.closed.Load() {
+			// 		c.logger.Info("Connection #%d eventLoop: connection closed after ctx.Done(), exiting", c.id)
+			// 		return
+			// 	}
+			// 	c.logger.Info("Connection #%d eventLoop: connection not closed after ctx.Done(), continuing for graceful shutdown", c.id)
+			// 	// Если не закрыто, продолжаем работать для graceful shutdown
 		}
 	}
 }
@@ -291,9 +324,6 @@ func (c *Connection[T]) eventLoop() {
 // Принимает контекст для управления отменой операции записи.
 // Возвращает ошибку, если соединение уже закрыто или контекст отменён.
 func (c *Connection[T]) Write(ctx context.Context, packet T) error {
-	if c.closed.Load() {
-		return net.ErrClosed
-	}
 
 	select {
 	case c.writeChan <- packet:
@@ -380,10 +410,8 @@ func (c *Connection[T]) IsShuttingDown() bool {
 // После закрытия вызывается обработчик OnClosed, если он установлен.
 // Повторные вызовы с другим значением force выполнят соответствующую операцию закрытия.
 func (c *Connection[T]) Close(force bool) error {
-	// Помечаем как закрытое (идемпотентно)
-	c.closed.Store(true)
-
 	// Отменяем контекст (потокобезопасно, идемпотентно)
+	// Это сигнализирует о начале процесса закрытия
 	c.cancel()
 
 	// Закрываем канал записи, чтобы writeGoroutine завершилась

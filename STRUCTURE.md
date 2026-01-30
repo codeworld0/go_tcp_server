@@ -9,7 +9,7 @@
 ├── .gitignore                      # Git ignore файл
 │
 ├── pkg/                            # Основной пакет библиотеки
-│   └── tcpserver/                  # Пакет tcpserver
+│   └── rltcpkit/                  # Пакет rltcpkit
 │       ├── doc.go                  # Документация пакета
 │       ├── logger.go               # Интерфейс Logger и NoopLogger
 │       ├── parser.go               # ProtocolParser интерфейс и ByteParser
@@ -33,7 +33,7 @@
 - **Makefile** - автоматизация сборки, тестирования и запуска
 - **.gitignore** - исключает временные файлы из git
 
-### pkg/tcpserver/
+### pkg/rltcpkit/
 
 Основной пакет библиотеки, содержащий все компоненты TCP сервера:
 
@@ -177,7 +177,7 @@ echo "Hello" | nc localhost 8080
 ## Тестирование
 Все компоненты покрыты unit тестами:
 ```bash
-go test -v ./pkg/tcpserver/
+go test -v ./pkg/rltcpkit/
 ```
 
 ## Требования

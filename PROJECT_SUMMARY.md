@@ -20,8 +20,8 @@
 ## 📁 Структура проекта
 
 ```
-/root/rltcpserver/
-├── pkg/tcpserver/              # Основной пакет библиотеки
+/root/rlrltcpkit/
+├── pkg/rltcpkit/              # Основной пакет библиотеки
 │   ├── doc.go                  # Документация пакета
 │   ├── logger.go               # Logger интерфейс (Info, Warn, Error)
 │   ├── parser.go               # ProtocolParser[T] + ByteParser
@@ -143,7 +143,7 @@ $ make test
 === RUN   TestConnectionUserData
 --- PASS: TestConnectionUserData (0.00s)
 PASS
-ok      github.com/example/tcpserver/pkg/tcpserver     0.415s
+ok      github.com/example/rltcpkit/pkg/rltcpkit     0.415s
 ```
 
 ---
@@ -170,17 +170,17 @@ echo "Hello" | nc localhost 8080
 ### Пример кода
 
 ```go
-server := tcpserver.NewServer[[]byte](":8080", tcpserver.Config{
+server := rltcpkit.NewServer[[]byte](":8080", rltcpkit.Config{
     MaxConnections: 100,
     Logger: &MyLogger{},
 })
 
-parser := tcpserver.NewByteParser()
+parser := rltcpkit.NewByteParser()
 
 server.Start(context.Background(), parser, 
-    func(conn *tcpserver.Connection[[]byte]) tcpserver.ConnectionHandlers[[]byte] {
-        return tcpserver.ConnectionHandlers[[]byte]{
-            OnRead: func(c *tcpserver.Connection[[]byte], data []byte) {
+    func(conn *rltcpkit.Connection[[]byte]) rltcpkit.ConnectionHandlers[[]byte] {
+        return rltcpkit.ConnectionHandlers[[]byte]{
+            OnRead: func(c *rltcpkit.Connection[[]byte], data []byte) {
                 c.Write(data) // Echo
             },
         }

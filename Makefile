@@ -3,7 +3,7 @@
 # Переменные
 BINARY_NAME=echo-server
 EXAMPLE_DIR=example
-PKG_DIR=pkg/tcpserver
+PKG_DIR=pkg/rltcpkit
 
 all: fmt vet build ## Форматирование, проверка и сборка
 

@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/example/tcpserver/pkg/tcpserver"
+	"github.com/example/rltcpkit/pkg/rltcpkit"
 )
 
 func main() {
@@ -25,20 +25,20 @@ func main() {
 	logger := &SimpleLogger{}
 
 	// Создаем конфигурацию сервера
-	config := tcpserver.Config{
+	config := rltcpkit.Config{
 		MaxConnections: *maxConnections,
 		Logger:         logger,
 	}
 
 	// Создаем сервер
-	server := tcpserver.NewServer[[]byte](*address, config)
+	server := rltcpkit.NewServer[[]byte](*address, config)
 
 	// Устанавливаем graceful shutdown timeout
 	shutdownTimeout := time.Duration(*shutdownTime) * time.Second
 	server.SetGracefulTimeout(shutdownTimeout)
 
 	// Создаем парсер для байтовых данных
-	parser := tcpserver.NewByteParser()
+	parser := rltcpkit.NewByteParser()
 
 	// Статистика
 	var connectionCounter int
@@ -48,7 +48,7 @@ func main() {
 	logger.Info("Max connections: %d", *maxConnections)
 	logger.Info("Graceful shutdown timeout: %v", shutdownTimeout)
 
-	done, err := server.Start(context.Background(), parser, func(conn *tcpserver.Connection[[]byte]) tcpserver.ConnectionHandlers[[]byte] {
+	done, err := server.Start(context.Background(), parser, func(conn *rltcpkit.Connection[[]byte]) rltcpkit.ConnectionHandlers[[]byte] {
 		// Увеличиваем счетчик подключений
 		connectionCounter++
 		connID := connectionCounter
@@ -60,8 +60,8 @@ func main() {
 		conn.Write(context.Background(), []byte(welcomeMsg))
 
 		// Возвращаем обработчики для этого соединения
-		return tcpserver.ConnectionHandlers[[]byte]{
-			OnRead: func(ctx context.Context, c *tcpserver.Connection[[]byte], data []byte) {
+		return rltcpkit.ConnectionHandlers[[]byte]{
+			OnRead: func(ctx context.Context, c *rltcpkit.Connection[[]byte], data []byte) {
 				logger.Info("Connection #%d received %d bytes: %s", connID, len(data), string(data))
 
 				// Echo: отправляем данные обратно
@@ -72,18 +72,18 @@ func main() {
 				}
 			},
 
-			OnError: func(c *tcpserver.Connection[[]byte], err error) {
+			OnError: func(c *rltcpkit.Connection[[]byte], err error) {
 				logger.Error("Connection #%d error: %v", connID, err)
 			},
 
-			OnStop: func(c *tcpserver.Connection[[]byte]) {
+			OnStop: func(c *rltcpkit.Connection[[]byte]) {
 				logger.Info("Connection #%d stopping gracefully...", connID)
 				// Отправляем прощальное сообщение
 				c.Write(context.Background(), []byte("Server is shutting down. Goodbye!\n"))
 				c.Close(false)
 			},
 
-			OnClosed: func(c *tcpserver.Connection[[]byte]) {
+			OnClosed: func(c *rltcpkit.Connection[[]byte]) {
 				logger.Info("Connection #%d closed (from %s)", connID, c.RemoteAddr())
 			},
 		}

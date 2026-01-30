@@ -17,7 +17,7 @@
 ## Установка
 
 ```bash
-go get github.com/example/tcpserver
+go get github.com/example/rltcpkit
 ```
 
 ## Быстрый старт
@@ -34,30 +34,30 @@ import (
     "os/signal"
     "syscall"
     "time"
-    "github.com/example/tcpserver/pkg/tcpserver"
+    "github.com/example/rltcpkit/pkg/rltcpkit"
 )
 
 func main() {
     // Создаем сервер
-    server := tcpserver.NewServer[[]byte](":8080", tcpserver.Config{
+    server := rltcpkit.NewServer[[]byte](":8080", rltcpkit.Config{
         MaxConnections: 100,
-        Logger:         tcpserver.NewNoopLogger(),
+        Logger:         rltcpkit.NewNoopLogger(),
     })
 
     // Устанавливаем таймаут для graceful shutdown
     server.SetGracefulTimeout(5 * time.Second)
 
     // Создаем парсер для байтовых данных
-    parser := tcpserver.NewByteParser()
+    parser := rltcpkit.NewByteParser()
 
     // Запускаем сервер
     done, err := server.Start(context.Background(), parser, 
-        func(conn *tcpserver.Connection[[]byte]) tcpserver.ConnectionHandlers[[]byte] {
-            return tcpserver.ConnectionHandlers[[]byte]{
-                OnRead: func(ctx context.Context, c *tcpserver.Connection[[]byte], data []byte) {
+        func(conn *rltcpkit.Connection[[]byte]) rltcpkit.ConnectionHandlers[[]byte] {
+            return rltcpkit.ConnectionHandlers[[]byte]{
+                OnRead: func(ctx context.Context, c *rltcpkit.Connection[[]byte], data []byte) {
                     c.Write(ctx, data) // Echo обратно
                 },
-                OnError: func(c *tcpserver.Connection[[]byte], err error) {
+                OnError: func(c *rltcpkit.Connection[[]byte], err error) {
                     log.Printf("Error: %v", err)
                 },
             }
@@ -161,7 +161,7 @@ func (p *MyProtocol) WritePacket(conn net.Conn, msg Message) error {
 }
 
 // Использование
-server := tcpserver.NewServer[Message](":8080", config)
+server := rltcpkit.NewServer[Message](":8080", config)
 parser := &MyProtocol{}
 done, err := server.Start(ctx, parser, onAcceptHandler)
 if err != nil {
