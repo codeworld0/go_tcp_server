@@ -31,7 +31,7 @@
 │   └── server_test.go          # Unit тесты
 │
 ├── example/                    # Примеры использования
-│   ├── logger.go               # SimpleLogger для примеров
+│   ├── logger.go               # Настройка slog для примеров
 │   ├── main.go                 # Echo сервер
 │   ├── custom_protocol_example.go # Кастомный протокол
 │   ├── echo-server             # Скомпилированный бинарник
@@ -74,10 +74,11 @@
    - `OnStop` - graceful shutdown (вызывается при timeout > 0)
    - `OnClosed` - закрытие соединения
 
-5. **Logger** - интерфейс логгирования
-   - `Info(msg, args...)` - информационные сообщения
-   - `Warn(msg, args...)` - предупреждения
-   - `Error(msg, args...)` - ошибки
+5. **Logger** - структурированное логгирование с `log/slog`
+   - `Info(msg, attrs...)` - информационные сообщения с атрибутами
+   - `Warn(msg, attrs...)` - предупреждения с атрибутами
+   - `Error(msg, attrs...)` - ошибки с атрибутами
+   - `Debug(msg, attrs...)` - отладочная информация
 
 ### ✅ Функциональность Start
 
@@ -170,9 +171,13 @@ echo "Hello" | nc localhost 8080
 ### Пример кода
 
 ```go
+logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+    Level: slog.LevelInfo,
+}))
+
 server := rltcpkit.NewServer[[]byte](":8080", rltcpkit.Config{
     MaxConnections: 100,
-    Logger: &MyLogger{},
+    Logger: logger,
 })
 
 parser := rltcpkit.NewByteParser()

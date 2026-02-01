@@ -11,7 +11,7 @@
 - ✅ **Ограничение подключений** - контроль максимального количества соединений
 - ✅ **Динамическая смена обработчиков** - например, после авторизации
 - ✅ **Пользовательские данные** - привязка данных к каждому соединению
-- ✅ **Гибкое логгирование** - собственный интерфейс логгера
+- ✅ **Структурированное логгирование** - используется стандартный `log/slog`
 - ✅ **Потокобезопасность** - готов к использованию в многопоточной среде
 
 ## Установка
@@ -29,7 +29,9 @@ package main
 
 import (
     "context"
+    "io"
     "log"
+    "log/slog"
     "os"
     "os/signal"
     "syscall"
@@ -38,10 +40,18 @@ import (
 )
 
 func main() {
+    // Создаем логгер
+    logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+        Level: slog.LevelInfo,
+    }))
+    
+    // Или без логирования:
+    // logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+    
     // Создаем сервер
     server := rltcpkit.NewServer[[]byte](":8080", rltcpkit.Config{
         MaxConnections: 100,
-        Logger:         rltcpkit.NewNoopLogger(),
+        Logger:         logger,
     })
 
     // Устанавливаем таймаут для graceful shutdown
@@ -207,24 +217,29 @@ OnRead: func(ctx context.Context, c *Connection[Message], msg Message) {
 }
 ```
 
-### Кастомный логгер
+### Настройка логгера
+
+Используйте стандартный `log/slog` с различными конфигурациями:
 
 ```go
-type MyLogger struct {
-    logger *slog.Logger
-}
+// Текстовый вывод в консоль
+logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+    Level: slog.LevelInfo,
+}))
 
-func (l *MyLogger) Info(msg string, args ...interface{}) {
-    l.logger.Info(fmt.Sprintf(msg, args...))
-}
+// JSON формат для production
+logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+    Level: slog.LevelInfo,
+}))
 
-func (l *MyLogger) Warn(msg string, args ...interface{}) {
-    l.logger.Warn(fmt.Sprintf(msg, args...))
-}
+// Без логирования (для тестов)
+logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-func (l *MyLogger) Error(msg string, args ...interface{}) {
-    l.logger.Error(fmt.Sprintf(msg, args...))
-}
+// С дополнительными атрибутами
+logger := slog.New(slog.NewTextHandler(os.Stdout, nil)).With(
+    "service", "tcp-server",
+    "version", "1.0.0",
+)
 ```
 
 ## Конфигурация
@@ -234,8 +249,8 @@ type Config struct {
     // Максимальное количество подключений (0 = без ограничений)
     MaxConnections int
     
-    // Логгер (nil = NoopLogger)
-    Logger Logger
+    // Логгер (nil = logger с выводом в io.Discard)
+    Logger *slog.Logger
     
     // Размер буфера чтения (0 = по умолчанию)
     ReadBufferSize int

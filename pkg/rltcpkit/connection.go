@@ -3,13 +3,14 @@ package rltcpkit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 )
-
 
 // connectionIDCounter - глобальный счетчик для генерации уникальных ID соединений
 var connectionIDCounter atomic.Uint64
@@ -55,7 +56,10 @@ type Connection[T any] struct {
 	cleanupFunc func()
 
 	// logger для логгирования событий соединения
-	logger Logger
+	logger *slog.Logger
+
+	// logLevel определяет уровень детализации debug логов для этого соединения
+	logLevel LogLevel
 }
 
 // newConnection создает новое соединение с указанными параметрами.
@@ -64,7 +68,8 @@ func newConnection[T any](
 	conn net.Conn,
 	parser ProtocolParser[T],
 	handlers ConnectionHandlers[T],
-	logger Logger,
+	logger *slog.Logger,
+	logLevel LogLevel,
 	parentCtx context.Context,
 	cleanupFunc func(),
 ) *Connection[T] {
@@ -81,6 +86,7 @@ func newConnection[T any](
 		cancel:      cancel,
 		shutdownCh:  make(chan struct{}),
 		logger:      logger,
+		logLevel:    logLevel,
 		cleanupFunc: cleanupFunc,
 	}
 
@@ -93,6 +99,23 @@ func newConnection[T any](
 	return c
 }
 
+// shouldLog проверяет, нужно ли логировать debug сообщение на данном уровне.
+// Не влияет на Info/Warn/Error логи - они всегда должны выводиться без проверки.
+func (c *Connection[T]) shouldLog(level LogLevel) bool {
+	return c.logLevel >= level
+}
+
+// getPacketSize пытается определить размер пакета для логирования.
+// Для []byte возвращает длину, для других типов возвращает 0.
+func getPacketSize[T any](packet T) int {
+	// Пытаемся привести к []byte
+	if data, ok := any(packet).([]byte); ok {
+		return len(data)
+	}
+	// Для других типов возвращаем 0
+	return 0
+}
+
 // readGoroutine выполняет чтение данных из соединения в отдельной горутине.
 // Отправляет прочитанные пакеты в readChan, ошибки в errorChan.
 // Завершается при закрытии сокета (ReadPacket вернет ошибку).
@@ -101,7 +124,9 @@ func (c *Connection[T]) readGoroutine() {
 		c.readCloseOnce.Do(func() {
 			close(c.readChan)
 		})
-		c.logger.Info("Connection #%d read loop closed %s", c.id, c.RemoteAddr())
+		if c.shouldLog(LogLevelDebug1) {
+			c.logger.Debug("Read loop closed", "conn_id", c.id, "remote_addr", c.RemoteAddr())
+		}
 	}()
 
 	for {
@@ -115,7 +140,9 @@ func (c *Connection[T]) readGoroutine() {
 		if err != nil {
 			// EOF - нормальное завершение соединения, закрываемся без ошибок
 			if errors.Is(err, io.EOF) {
-				c.logger.Info("Socket of connection #%d closed by remote peer (EOF)", c.id)
+				if c.shouldLog(LogLevelDebug1) {
+					c.logger.Debug("Socket closed by remote peer", "conn_id", c.id)
+				}
 				return
 			}
 			// Проверяем, является ли ошибка таймаутом
@@ -131,7 +158,9 @@ func (c *Connection[T]) readGoroutine() {
 			}
 
 			// Отправляем ошибку в канал ошибок
-			c.logger.Info("Connection #%d sending error to errorChan: %v", c.id, err)
+			if c.shouldLog(LogLevelDebug2) {
+				c.logger.Debug("Sending error to errorChan", "conn_id", c.id, "error", err)
+			}
 			c.errorChan <- err
 			return
 		}
@@ -139,6 +168,14 @@ func (c *Connection[T]) readGoroutine() {
 		// Пропускаем nil пакеты
 		if any(packet) == nil {
 			continue
+		}
+
+		// Логируем получение пакета на уровне Debug3
+		if c.shouldLog(LogLevelDebug3) {
+			c.logger.Debug("Packet received",
+				"conn_id", c.id,
+				"direction", "received",
+				"bytes", getPacketSize(packet))
 		}
 
 		// Отправляем прочитанный пакет в канал чтения (без вызова обработчика)
@@ -152,7 +189,9 @@ func (c *Connection[T]) readGoroutine() {
 // Это позволяет завершить запись всех буферизованных данных при graceful shutdown.
 func (c *Connection[T]) writeGoroutine() {
 	defer func() {
-		c.logger.Info("Connection #%d write loop closed %s", c.id, c.RemoteAddr())
+		if c.shouldLog(LogLevelDebug1) {
+			c.logger.Debug("Write loop closed", "conn_id", c.id, "remote_addr", c.RemoteAddr())
+		}
 	}()
 
 	for packet := range c.writeChan {
@@ -172,6 +211,14 @@ func (c *Connection[T]) writeGoroutine() {
 			}
 			return
 		}
+
+		// Логируем отправку пакета на уровне Debug3
+		if c.shouldLog(LogLevelDebug3) {
+			c.logger.Debug("Packet sent",
+				"conn_id", c.id,
+				"direction", "sent",
+				"bytes", getPacketSize(packet))
+		}
 	}
 }
 
@@ -179,16 +226,16 @@ func (c *Connection[T]) writeGoroutine() {
 // Читает из readChan, errorChan, shutdownCh и вызывает соответствующие обработчики.
 // Завершается только при явном закрытии или ошибке, НЕ при ctx.Done() (для graceful shutdown).
 func (c *Connection[T]) eventLoop() {
-	defer c.logger.Info("Connection #%d event loop finished %s", c.id, c.RemoteAddr())
+	defer func() {
+		if c.shouldLog(LogLevelDebug1) {
+			c.logger.Debug("Event loop finished", "conn_id", c.id, "remote_addr", c.RemoteAddr())
+		}
+	}()
 	// Внутренний WaitGroup для read/write горутин
 	var ioWg sync.WaitGroup
 
-	// Запускаем горутины чтения и записи
-	ioWg.Add(2)
-	go func() {
-		defer ioWg.Done()
-		c.readGoroutine()
-	}()
+	// Запускаем ТОЛЬКО writeGoroutine до handshake (нужна для отправки данных в OnConnected)
+	ioWg.Add(1)
 	go func() {
 		defer ioWg.Done()
 		c.writeGoroutine()
@@ -227,56 +274,94 @@ func (c *Connection[T]) eventLoop() {
 		// Устанавливаем флаг closed в самом конце, когда всё действительно завершено
 		c.closed.Store(true)
 
-		c.logger.Info("Connection #%d event loop closed %s", c.id, c.RemoteAddr())
+		if c.shouldLog(LogLevelDebug1) {
+			c.logger.Debug("Event loop closed", "conn_id", c.id, "remote_addr", c.RemoteAddr())
+		}
 	}()
 
-	// Вызываем обработчик OnConnected после регистрации defer и запуска горутин
+	// Вызываем обработчик OnConnected ДО запуска readGoroutine
+	// Это позволяет выполнить handshake через RawConn() без конкуренции с парсером
 	handlers := c.handlers.Load().(ConnectionHandlers[T])
 	if handlers.OnConnected != nil {
 		handlers.OnConnected(c.ctx, c)
 	}
+
+	// Проверяем контекст после OnConnected - мог быть отменен во время handshake
+	if c.ctx.Err() != nil {
+		if c.shouldLog(LogLevelDebug2) {
+			c.logger.Debug("EventLoop context cancelled after OnConnected, exiting", "conn_id", c.id)
+		}
+		return
+	}
+
+	// ТОЛЬКО ПОСЛЕ OnConnected запускаем readGoroutine
+	// К этому моменту handshake уже завершен и можно начинать парсить фреймы
+	ioWg.Add(1)
+	go func() {
+		defer ioWg.Done()
+		c.readGoroutine()
+	}()
 
 	shutdownCh := c.shutdownCh // локальная копия для предотвращения busy loop
 
 	for {
 		// Проверяем контекст в начале каждой итерации
 		if c.ctx.Err() != nil {
-			c.logger.Info("Connection #%d eventLoop: context cancelled, exiting", c.id)
+			if c.shouldLog(LogLevelDebug2) {
+				c.logger.Debug("EventLoop context cancelled, exiting", "conn_id", c.id)
+			}
 			return
 		}
 
-		c.logger.Info("Connection #%d eventLoop: waiting for events (shutdownCh=%v, errorChan buffer=%d/%d, readChan buffer=%d/%d)",
-			c.id, shutdownCh != nil, len(c.errorChan), cap(c.errorChan), len(c.readChan), cap(c.readChan))
+		if c.shouldLog(LogLevelDebug2) {
+			c.logger.Debug("EventLoop waiting for events", "conn_id", c.id, "shutdown_pending", shutdownCh != nil,
+				"error_chan_buffer", len(c.errorChan), "error_chan_cap", cap(c.errorChan),
+				"read_chan_buffer", len(c.readChan), "read_chan_cap", cap(c.readChan))
+		}
 
 		select {
 		case packet, ok := <-c.readChan:
-			c.logger.Info("Connection #%d eventLoop: received packet from readChan (ok=%v)", c.id, ok)
+			if c.shouldLog(LogLevelDebug2) {
+				c.logger.Debug("Received packet from readChan", "conn_id", c.id, "ok", ok)
+			}
 			if !ok {
 				// Канал закрыт, выходим
 				if c.ctx.Err() == nil {
-					c.logger.Error("Connection #%d eventLoop: readChan closed unexpectedly (context not done)", c.id)
+					c.logger.Error("ReadChan closed unexpectedly", "conn_id", c.id)
 				}
-				c.logger.Info("Connection #%d eventLoop: readChan closed, exiting", c.id)
+				if c.shouldLog(LogLevelDebug2) {
+					c.logger.Debug("ReadChan closed, exiting", "conn_id", c.id)
+				}
 				return
 			}
 			// Вызываем обработчик OnRead
-			c.logger.Info("Connection #%d eventLoop: calling OnRead handler", c.id)
+			if c.shouldLog(LogLevelDebug2) {
+				c.logger.Debug("Calling OnRead handler", "conn_id", c.id)
+			}
 			handlers := c.handlers.Load().(ConnectionHandlers[T])
 			if handlers.OnRead != nil {
 				handlers.OnRead(c.ctx, c, packet)
 			}
-			c.logger.Info("Connection #%d eventLoop: OnRead handler completed", c.id)
+			if c.shouldLog(LogLevelDebug2) {
+				c.logger.Debug("OnRead handler completed", "conn_id", c.id)
+			}
 
 		case err, ok := <-c.errorChan:
-			c.logger.Info("Connection #%d eventLoop: received error from errorChan (ok=%v, err=%v)", c.id, ok, err)
+			if c.shouldLog(LogLevelDebug2) {
+				c.logger.Debug("Received error from errorChan", "conn_id", c.id, "ok", ok, "error", err)
+			}
 			if !ok {
 				// Канал закрыт, выходим
-				c.logger.Info("Connection #%d eventLoop: errorChan closed, exiting", c.id)
+				if c.shouldLog(LogLevelDebug2) {
+					c.logger.Debug("ErrorChan closed, exiting", "conn_id", c.id)
+				}
 				return
 			}
-			c.logger.Info("Connection #%d received error from errorChan: type=%T, err=%v", c.id, err, err)
+			if c.shouldLog(LogLevelDebug2) {
+				c.logger.Debug("Received error from errorChan", "conn_id", c.id, "error_type", fmt.Sprintf("%T", err), "error", err)
+			}
 
-			c.logger.Error("Connection #%d error: %v", c.id, err)
+			c.logger.Error("Connection error", "conn_id", c.id, "error", err)
 			// Вызываем обработчик OnError
 			handlers := c.handlers.Load().(ConnectionHandlers[T])
 			if handlers.OnError != nil {
@@ -288,21 +373,31 @@ func (c *Connection[T]) eventLoop() {
 			return
 
 		case <-shutdownCh:
-			c.logger.Info("Connection #%d eventLoop: received shutdown signal", c.id)
+			if c.shouldLog(LogLevelDebug2) {
+				c.logger.Debug("Received shutdown signal", "conn_id", c.id)
+			}
 			// Вызываем обработчик OnStop синхронно
 			handlers := c.handlers.Load().(ConnectionHandlers[T])
 			if handlers.OnStop != nil {
-				c.logger.Info("Connection #%d eventLoop: calling OnStop handler", c.id)
+				if c.shouldLog(LogLevelDebug2) {
+					c.logger.Debug("Calling OnStop handler", "conn_id", c.id)
+				}
 				handlers.OnStop(c)
-				c.logger.Info("Connection #%d eventLoop: OnStop handler completed", c.id)
+				if c.shouldLog(LogLevelDebug2) {
+					c.logger.Debug("OnStop handler completed", "conn_id", c.id)
+				}
 			} else {
 				// Если обработчик OnStop не установлен, сразу закрываем соединение
-				c.logger.Info("Connection #%d eventLoop: no OnStop handler, closing connection", c.id)
+				if c.shouldLog(LogLevelDebug2) {
+					c.logger.Debug("No OnStop handler, closing connection", "conn_id", c.id)
+				}
 				c.Close(false) // мягкое закрытие для завершения отправки буферизованных данных
 				return
 			}
 			// Устанавливаем канал в nil, чтобы этот case больше не срабатывал
-			c.logger.Info("Connection #%d eventLoop: setting shutdownCh to nil", c.id)
+			if c.shouldLog(LogLevelDebug2) {
+				c.logger.Debug("Setting shutdownCh to nil", "conn_id", c.id)
+			}
 			shutdownCh = nil
 			//Временно закоментировано
 			// case <-c.ctx.Done():

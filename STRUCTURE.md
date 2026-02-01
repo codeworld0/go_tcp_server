@@ -11,7 +11,7 @@
 ├── pkg/                            # Основной пакет библиотеки
 │   └── rltcpkit/                  # Пакет rltcpkit
 │       ├── doc.go                  # Документация пакета
-│       ├── logger.go               # Интерфейс Logger и NoopLogger
+│       ├── logger.go               # Вспомогательные функции для slog
 │       ├── parser.go               # ProtocolParser интерфейс и ByteParser
 │       ├── handlers.go             # ConnectionHandlers типы
 │       ├── connection.go           # Connection обёртка с каналами
@@ -43,9 +43,9 @@
 - Общее описание архитектуры
 
 #### logger.go
-- `Logger` interface - интерфейс логгирования
-- `noopLogger` - реализация без действий
-- Методы: Info, Warn, Error
+- Использует стандартный `log/slog` для структурированного логгирования
+- Поддерживает различные форматы вывода (Text, JSON)
+- Методы: Info, Warn, Error, Debug с поддержкой атрибутов
 
 #### parser.go
 - `ProtocolParser[T]` interface - generic интерфейс для протоколов

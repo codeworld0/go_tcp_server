@@ -2,6 +2,8 @@ package rltcpkit
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -9,7 +11,7 @@ import (
 
 // TestServerStartStop проверяет базовый запуск и остановку сервера
 func TestServerStartStop(t *testing.T) {
-	logger := NewNoopLogger()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
@@ -49,7 +51,7 @@ func TestServerStartStop(t *testing.T) {
 
 // TestServerConnection проверяет подключение к серверу
 func TestServerConnection(t *testing.T) {
-	logger := NewNoopLogger()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
@@ -96,7 +98,7 @@ func TestServerConnection(t *testing.T) {
 
 // TestServerEcho проверяет эхо-функциональность
 func TestServerEcho(t *testing.T) {
-	logger := NewNoopLogger()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
@@ -150,7 +152,7 @@ func TestServerEcho(t *testing.T) {
 
 // TestServerMaxConnections проверяет ограничение максимального количества подключений
 func TestServerMaxConnections(t *testing.T) {
-	logger := NewNoopLogger()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	config := Config{
 		MaxConnections: 2, // Только 2 подключения
 		Logger:         logger,
@@ -239,7 +241,7 @@ func TestByteParser(t *testing.T) {
 
 // TestConnectionUserData проверяет работу с пользовательскими данными
 func TestConnectionUserData(t *testing.T) {
-	logger := NewNoopLogger()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
@@ -287,7 +289,7 @@ func TestConnectionUserData(t *testing.T) {
 
 // TestGracefulShutdown проверяет корректность graceful shutdown с новой архитектурой
 func TestGracefulShutdown(t *testing.T) {
-	logger := NewNoopLogger()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
@@ -362,7 +364,7 @@ func TestGracefulShutdown(t *testing.T) {
 
 // TestEventLoopHandlesAllEvents проверяет что eventLoop обрабатывает все события корректно
 func TestEventLoopHandlesAllEvents(t *testing.T) {
-	logger := NewNoopLogger()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,

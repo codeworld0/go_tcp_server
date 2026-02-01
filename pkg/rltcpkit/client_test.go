@@ -4,29 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-type consoleLogger struct{}
-
-func (c *consoleLogger) Info(msg string, args ...interface{}) {
-	log.Printf("[INFO] "+msg, args...)
-}
-
-func (c *consoleLogger) Warn(msg string, args ...interface{}) {
-	log.Printf("[WARN] "+msg, args...)
-}
-
-func (c *consoleLogger) Error(msg string, args ...interface{}) {
-	log.Printf("[ERROR] "+msg, args...)
-}
-
-func newConsoleLogger() Logger {
-	return &consoleLogger{}
+func newConsoleLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // TestClientConnect проверяет успешное подключение клиента к серверу.
@@ -253,7 +240,7 @@ func TestClientDisconnect(t *testing.T) {
 func TestClientReconnect(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: NewNoopLogger(),
+		Logger: newConsoleLogger(),
 	})
 
 	parser := NewByteParser()
@@ -365,7 +352,7 @@ func TestClientReconnect(t *testing.T) {
 func TestClientMaxReconnectAttempts(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: NewNoopLogger(),
+		Logger: newConsoleLogger(),
 	})
 
 	parser := NewByteParser()
@@ -451,7 +438,7 @@ func TestClientMaxReconnectAttempts(t *testing.T) {
 func TestClientContextCancellation(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: NewNoopLogger(),
+		Logger: newConsoleLogger(),
 	})
 
 	parser := NewByteParser()
@@ -762,7 +749,7 @@ waitLoop:
 func BenchmarkClientWriteRead(b *testing.B) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: NewNoopLogger(),
+		Logger: newConsoleLogger(),
 	})
 
 	parser := NewByteParser()
@@ -785,7 +772,7 @@ func BenchmarkClientWriteRead(b *testing.B) {
 	client := NewClient[[]byte](server.GetAddress(), ClientConfig{
 		ConnectTimeout:   5 * time.Second,
 		ReconnectEnabled: false,
-		Logger:           NewNoopLogger(),
+		Logger:           newConsoleLogger(),
 	})
 
 	receivedCh := make(chan struct{}, b.N)

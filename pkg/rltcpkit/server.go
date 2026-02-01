@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -28,8 +30,13 @@ type Config struct {
 	MaxConnections int
 
 	// Logger используется для логгирования событий сервера.
-	// Если nil, используется NoopLogger (без логгирования).
-	Logger Logger
+	// Если nil, используется slog.Logger с выводом в io.Discard (без логгирования).
+	Logger *slog.Logger
+
+	// LogLevel определяет уровень детализации debug логов.
+	// Не влияет на Info/Warn/Error логи - они всегда выводятся.
+	// По умолчанию LogLevelInfo (debug логи отключены).
+	LogLevel LogLevel
 
 	// ReadBufferSize размер буфера чтения для каждого соединения (в байтах).
 	// Если 0, используется значение по умолчанию из системы.
@@ -71,7 +78,7 @@ type Server[T any] struct {
 	parser   ProtocolParser[T]
 
 	// Logger
-	logger Logger
+	logger *slog.Logger
 }
 
 // NewServer создает новый TCP сервер с указанными адресом и конфигурацией.
@@ -91,7 +98,7 @@ type Server[T any] struct {
 //	})
 func NewServer[T any](address string, config Config) *Server[T] {
 	if config.Logger == nil {
-		config.Logger = NewNoopLogger()
+		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
 	return &Server[T]{
@@ -178,7 +185,7 @@ func (s *Server[T]) Start(
 		s.listener = listener
 		s.running.Store(true)
 
-		s.logger.Info("TCP server started on %s", s.address)
+		s.logger.Info("TCP server started", "address", s.address)
 
 		// Запускаем горутину для accept
 		s.acceptWg.Add(1)
@@ -219,7 +226,7 @@ func (s *Server[T]) acceptLoop() {
 			case <-s.ctx.Done():
 				return
 			default:
-				s.logger.Error("Accept error: %v", err)
+				s.logger.Error("Accept error", "error", err)
 				continue
 			}
 		}
@@ -228,13 +235,13 @@ func (s *Server[T]) acceptLoop() {
 		if s.config.MaxConnections > 0 {
 			currentCount := s.connCount.Load()
 			if currentCount >= int64(s.config.MaxConnections) {
-				s.logger.Warn("Max connections reached, rejecting connection from %s", conn.RemoteAddr())
+				s.logger.Warn("Max connections reached, rejecting connection", "remote_addr", conn.RemoteAddr())
 				conn.Close()
 				continue
 			}
 		}
 
-		s.logger.Info("New connection from %s", conn.RemoteAddr())
+		s.logger.Info("New connection", "remote_addr", conn.RemoteAddr())
 
 		// Обрабатываем новое подключение
 		s.handleConnection(conn)
@@ -244,7 +251,7 @@ func (s *Server[T]) acceptLoop() {
 // contextMonitor отслеживает завершение контекста и автоматически останавливает сервер.
 func (s *Server[T]) contextMonitor() {
 	<-s.ctx.Done()
-	s.logger.Info("Context cancelled, stopping server...")
+	s.logger.Info("Context cancelled, stopping server")
 	_ = s.Stop()
 }
 
@@ -271,7 +278,7 @@ func (s *Server[T]) handleConnection(conn net.Conn) {
 		// Уведомляем WaitGroup о завершении соединения
 		s.connWg.Done()
 
-		s.logger.Info("Connection #%d closed from %s", connection.id, conn.RemoteAddr())
+		s.logger.Info("Connection closed", "conn_id", connection.id, "remote_addr", conn.RemoteAddr())
 	}
 
 	// Создаем объект Connection
@@ -280,6 +287,7 @@ func (s *Server[T]) handleConnection(conn net.Conn) {
 		s.parser,
 		handlers,
 		s.logger,
+		s.config.LogLevel,
 		s.ctx,
 		cleanupFunc,
 	)
@@ -324,7 +332,7 @@ func (s *Server[T]) Stop() error {
 
 	var stopErr error
 	s.stopOnce.Do(func() {
-		s.logger.Info("Stopping TCP server...")
+		s.logger.Info("Stopping TCP server")
 
 		// Отменяем контекст сервера первым делом, чтобы acceptLoop корректно завершился
 		s.cancel()
@@ -332,7 +340,7 @@ func (s *Server[T]) Stop() error {
 		// Закрываем listener, чтобы не принимать новые подключения
 		if s.listener != nil {
 			if err := s.listener.Close(); err != nil {
-				s.logger.Error("Error closing listener: %v", err)
+				s.logger.Error("Error closing listener", "error", err)
 				stopErr = err
 			}
 		}
@@ -340,7 +348,7 @@ func (s *Server[T]) Stop() error {
 		s.acceptWg.Wait()
 		// Если gracefulTimeout > 0, выполняем graceful shutdown
 		if s.gracefulTimeout > 0 {
-			s.logger.Info("Starting graceful shutdown with timeout %v", s.gracefulTimeout)
+			s.logger.Info("Starting graceful shutdown", "timeout", s.gracefulTimeout)
 
 			// Уведомляем все соединения о shutdown
 			s.connections.Range(func(key, value interface{}) bool {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math"
 	"net"
 	"sync"
@@ -54,8 +56,13 @@ type ClientConfig struct {
 	ReconnectMaxDelay time.Duration
 
 	// Logger используется для логгирования событий клиента.
-	// Если nil, используется NoopLogger (без логгирования).
-	Logger Logger
+	// Если nil, используется slog.Logger с выводом в io.Discard (без логгирования).
+	Logger *slog.Logger
+
+	// LogLevel определяет уровень детализации debug логов.
+	// Не влияет на Info/Warn/Error логи - они всегда выводятся.
+	// По умолчанию LogLevelInfo (debug логи отключены).
+	LogLevel LogLevel
 }
 
 // Client представляет TCP клиент с поддержкой автоматического переподключения.
@@ -90,7 +97,7 @@ type Client[T any] struct {
 	reconnectCh chan struct{} // канал для запуска переподключения
 
 	// Logger
-	logger Logger
+	logger *slog.Logger
 }
 
 // NewClient создает новый TCP клиент с указанными адресом и конфигурацией.
@@ -115,7 +122,7 @@ type Client[T any] struct {
 func NewClient[T any](address string, config ClientConfig) *Client[T] {
 	// Установка значений по умолчанию
 	if config.Logger == nil {
-		config.Logger = NewNoopLogger()
+		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	if config.ConnectTimeout == 0 {
 		config.ConnectTimeout = 10 * time.Second
@@ -204,7 +211,7 @@ func (c *Client[T]) Start(
 
 		c.running.Store(true)
 
-		c.logger.Info("TCP client starting for %s", c.address)
+		c.logger.Info("TCP client starting", "address", c.address)
 
 		// Запускаем горутину управления жизненным циклом
 		c.mainWg.Add(1)
@@ -223,7 +230,7 @@ func (c *Client[T]) connect() error {
 	default:
 	}
 
-	c.logger.Info("Connecting to %s...", c.address)
+	c.logger.Info("Connecting", "address", c.address)
 
 	// Создаем контекст с таймаутом для подключения
 	connectCtx, connectCancel := context.WithTimeout(c.ctx, c.config.ConnectTimeout)
@@ -233,11 +240,11 @@ func (c *Client[T]) connect() error {
 	var d net.Dialer
 	conn, err := d.DialContext(connectCtx, "tcp", c.address)
 	if err != nil {
-		c.logger.Error("Failed to connect to %s: %v", c.address, err)
+		c.logger.Error("Failed to connect", "address", c.address, "error", err)
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
-	c.logger.Info("Connected to %s", c.address)
+	c.logger.Info("Connected", "address", c.address)
 
 	// Создаем адаптер обработчиков
 	connectionHandlers := c.createConnectionHandlers()
@@ -250,18 +257,15 @@ func (c *Client[T]) connect() error {
 		// Уведомляем WaitGroup о завершении соединения
 		c.connWg.Done()
 
-		c.logger.Info("Connection #%d to %s cleaned up", c.conn.id, c.address)
+		if c.config.LogLevel >= LogLevelDebug1 {
+			c.logger.Debug("Connection cleaned up", "address", c.address)
+		}
 	}
-
+	c.connected.Store(true)
 	// Создаем Connection с cleanupFunc
 	c.mu.Lock()
-	c.conn = newConnection(conn, c.parser, connectionHandlers, c.logger, c.ctx, cleanupFunc)
+	c.conn = newConnection(conn, c.parser, connectionHandlers, c.logger, c.config.LogLevel, c.ctx, cleanupFunc)
 	c.mu.Unlock()
-
-	c.connected.Store(true)
-
-	// OnConnected теперь вызывается через OnConnect в eventLoop
-
 	return nil
 }
 
@@ -327,7 +331,7 @@ func (c *Client[T]) connectionLoop() {
 
 	// Выполняем первое подключение
 	if err := c.connect(); err != nil {
-		c.logger.Error("Failed to establish initial connection: %v", err)
+		c.logger.Error("Failed to establish initial connection", "error", err)
 
 		// Вызываем OnError для первой неудачной попытки
 		// conn передаем nil т.к. соединение не установлено
@@ -355,7 +359,7 @@ func (c *Client[T]) connectionLoop() {
 	for {
 		select {
 		case <-c.ctx.Done():
-			c.logger.Info("Context cancelled, stopping client...")
+			c.logger.Info("Context cancelled, stopping client")
 			return
 
 		case <-c.reconnectCh:
@@ -378,7 +382,7 @@ func (c *Client[T]) connectionLoop() {
 
 			// Проверяем лимит попыток
 			if c.config.MaxReconnectAttempts > 0 && attempt > c.config.MaxReconnectAttempts {
-				c.logger.Error("Max reconnect attempts (%d) reached", c.config.MaxReconnectAttempts)
+				c.logger.Error("Max reconnect attempts reached", "max_attempts", c.config.MaxReconnectAttempts)
 				// conn передаем nil т.к. соединение не восстановлено
 				if c.handlers.OnError != nil {
 					c.handlers.OnError(nil, ErrReconnectFailed)
@@ -389,7 +393,7 @@ func (c *Client[T]) connectionLoop() {
 			// Вычисляем задержку с экспоненциальным backoff
 			delay := c.calculateReconnectDelay(attempt)
 
-			c.logger.Info("Reconnecting to %s (attempt %d) after %v...", c.address, attempt, delay)
+			c.logger.Info("Reconnecting", "address", c.address, "attempt", attempt, "delay", delay)
 
 			// Устанавливаем таймер для переподключения (канал больше не nil)
 			reconnectTimer = time.After(delay)
@@ -409,7 +413,7 @@ func (c *Client[T]) connectionLoop() {
 
 			// Пытаемся подключиться
 			if err := c.connect(); err != nil {
-				c.logger.Error("Reconnect attempt %d failed: %v", attempt, err)
+				c.logger.Error("Reconnect attempt failed", "attempt", attempt, "error", err)
 
 				// Вызываем OnError для каждой неудачной попытки
 				if c.handlers.OnError != nil {
@@ -428,7 +432,7 @@ func (c *Client[T]) connectionLoop() {
 			}
 
 			// Успешное переподключение
-			c.logger.Info("Reconnected successfully after %d attempts", attempt)
+			c.logger.Info("Reconnected successfully", "attempts", attempt)
 			attempt = 0
 			needReconnect = false
 		}
@@ -478,7 +482,7 @@ func (c *Client[T]) Stop() error {
 
 	var stopErr error
 	c.stopOnce.Do(func() {
-		c.logger.Info("Stopping TCP client...")
+		c.logger.Info("Stopping TCP client")
 
 		c.disconnecting.Store(true)
 
@@ -489,7 +493,7 @@ func (c *Client[T]) Stop() error {
 
 		// Если gracefulTimeout > 0, выполняем graceful shutdown
 		if c.gracefulTimeout > 0 {
-			c.logger.Info("Starting graceful shutdown with timeout %v", c.gracefulTimeout)
+			c.logger.Info("Starting graceful shutdown", "timeout", c.gracefulTimeout)
 
 			// Получаем текущее соединение
 			c.mu.RLock()
@@ -523,7 +527,7 @@ func (c *Client[T]) Stop() error {
 
 		if conn != nil && !conn.IsClosed() {
 			if err := conn.Close(true); err != nil {
-				c.logger.Error("Error closing connection: %v", err)
+				c.logger.Error("Error closing connection", "error", err)
 				stopErr = err
 			}
 		}
