@@ -104,7 +104,7 @@ func NewServer[T any](address string, config Config) *Server[T] {
 	return &Server[T]{
 		address: address,
 		config:  config,
-		logger:  config.Logger,
+		logger:  config.Logger.With("pkg", "rltcpkit.server"),
 	}
 }
 

@@ -137,7 +137,7 @@ func NewClient[T any](address string, config ClientConfig) *Client[T] {
 	return &Client[T]{
 		address:     address,
 		config:      config,
-		logger:      config.Logger,
+		logger:      config.Logger.With("pkg", "rltcpkit.client"),
 		reconnectCh: make(chan struct{}, 1),
 	}
 }
