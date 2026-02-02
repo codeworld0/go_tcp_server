@@ -2,10 +2,11 @@
 //
 // Основные возможности:
 //   - Generic протоколы через интерфейс ProtocolParser[T]
-//   - Гибкая система обработчиков событий (OnRead, OnError, OnStop, OnClosed)
+//   - Гибкая система обработчиков событий (OnConnected, OnRead, OnError, OnStop, OnClosed)
 //   - Асинхронная работа через каналы для чтения, записи и ошибок
 //   - Graceful shutdown с настраиваемым таймаутом
 //   - Ограничение максимального количества подключений
+//   - Валидация подключений через onAccept callback
 //   - Поддержка пользовательских данных для каждого соединения
 //   - Возможность смены обработчиков во время работы (например, после авторизации)
 //   - Гибкое логгирование через интерфейс Logger
@@ -20,7 +21,7 @@
 // ClientHandlers - набор обработчиков событий клиента
 // Logger - интерфейс для логгирования
 //
-// Пример использования:
+// Пример использования сервера:
 //
 //	// Создаем сервер
 //	server := rltcpkit.NewServer[[]byte](":8080", rltcpkit.Config{
@@ -34,20 +35,33 @@
 //	// Создаем парсер для байтовых данных
 //	parser := rltcpkit.NewByteParser()
 //
+//	// Создаем обработчики для всех соединений
+//	handlers := rltcpkit.ConnectionHandlers[[]byte]{
+//	    OnConnected: func(ctx context.Context, c *rltcpkit.Connection[[]byte]) {
+//	        log.Printf("New connection from %s", c.RemoteAddr())
+//	    },
+//	    OnRead: func(ctx context.Context, c *rltcpkit.Connection[[]byte], data []byte) {
+//	        c.Write(ctx, data) // echo
+//	    },
+//	    OnError: func(c *rltcpkit.Connection[[]byte], err error) {
+//	        log.Printf("Error: %v", err)
+//	    },
+//	    OnClosed: func(c *rltcpkit.Connection[[]byte]) {
+//	        log.Printf("Connection closed")
+//	    },
+//	}
+//
+//	// Опционально: создаем функцию валидации подключений
+//	onAccept := func(remoteAddr string) bool {
+//	    // Проверяем IP, rate limits и т.д.
+//	    return true // разрешаем подключение
+//	}
+//
 //	// Запускаем сервер
-//	done, err := server.Start(context.Background(), parser, func(conn *rltcpkit.Connection[[]byte]) rltcpkit.ConnectionHandlers[[]byte] {
-//	    return rltcpkit.ConnectionHandlers[[]byte]{
-//	        OnRead: func(ctx context.Context, c *rltcpkit.Connection[[]byte], data []byte) {
-//	            c.Write(data) // echo
-//	        },
-//	        OnError: func(c *rltcpkit.Connection[[]byte], err error) {
-//	            log.Printf("Error: %v", err)
-//	        },
-//	        OnClosed: func(c *rltcpkit.Connection[[]byte]) {
-//	            log.Printf("Connection closed")
-//	        },
-//	    }
-//	})
+//	done, err := server.Start(context.Background(), parser, handlers, onAccept)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //
 //	// Graceful shutdown
 //	server.Stop()

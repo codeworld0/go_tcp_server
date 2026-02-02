@@ -60,18 +60,28 @@ func main() {
     // Создаем парсер для байтовых данных
     parser := rltcpkit.NewByteParser()
 
+    // Создаем обработчики для всех соединений
+    handlers := rltcpkit.ConnectionHandlers[[]byte]{
+        OnConnected: func(ctx context.Context, c *rltcpkit.Connection[[]byte]) {
+            log.Printf("New connection from %s", c.RemoteAddr())
+        },
+        OnRead: func(ctx context.Context, c *rltcpkit.Connection[[]byte], data []byte) {
+            c.Write(ctx, data) // Echo обратно
+        },
+        OnError: func(c *rltcpkit.Connection[[]byte], err error) {
+            log.Printf("Error: %v", err)
+        },
+    }
+
+    // Опционально: функция валидации подключений
+    onAccept := func(remoteAddr string) bool {
+        // Проверяем IP whitelist, rate limits и т.д.
+        log.Printf("Accepting connection from %s", remoteAddr)
+        return true // разрешаем подключение
+    }
+
     // Запускаем сервер
-    done, err := server.Start(context.Background(), parser, 
-        func(conn *rltcpkit.Connection[[]byte]) rltcpkit.ConnectionHandlers[[]byte] {
-            return rltcpkit.ConnectionHandlers[[]byte]{
-                OnRead: func(ctx context.Context, c *rltcpkit.Connection[[]byte], data []byte) {
-                    c.Write(ctx, data) // Echo обратно
-                },
-                OnError: func(c *rltcpkit.Connection[[]byte], err error) {
-                    log.Printf("Error: %v", err)
-                },
-            }
-        })
+    done, err := server.Start(context.Background(), parser, handlers, onAccept)
 
     if err != nil {
         log.Fatal(err)
@@ -173,7 +183,14 @@ func (p *MyProtocol) WritePacket(conn net.Conn, msg Message) error {
 // Использование
 server := rltcpkit.NewServer[Message](":8080", config)
 parser := &MyProtocol{}
-done, err := server.Start(ctx, parser, onAcceptHandler)
+
+handlers := rltcpkit.ConnectionHandlers[Message]{
+    OnRead: func(ctx context.Context, c *rltcpkit.Connection[Message], msg Message) {
+        // Обработка сообщения
+    },
+}
+
+done, err := server.Start(ctx, parser, handlers, nil)
 if err != nil {
     log.Fatal(err)
 }
@@ -182,22 +199,31 @@ if err != nil {
 ### Смена обработчиков после авторизации
 
 ```go
-done, err := server.Start(ctx, parser, func(conn *Connection[Message]) ConnectionHandlers[Message] {
-    return ConnectionHandlers[Message]{
-        OnRead: func(ctx context.Context, c *Connection[Message], msg Message) {
-            // Проверяем авторизацию
-            if c.GetUserData() == nil {
-                if msg.Type == "AUTH" && validateAuth(msg.Data) {
-                    c.SetUserData("authorized")
-                    c.SetHandlers(getAuthorizedHandlers()) // Меняем обработчики
-                    c.Write(ctx, Message{Type: "AUTH_OK"})
-                } else {
-                    c.Write(ctx, Message{Type: "AUTH_REQUIRED"})
-                }
+// Создаем обработчики для авторизованных пользователей
+authorizedHandlers := ConnectionHandlers[Message]{
+    OnRead: func(ctx context.Context, c *Connection[Message], msg Message) {
+        // Обработка сообщений от авторизованных пользователей
+        handleAuthorizedMessage(c, msg)
+    },
+}
+
+// Создаем начальные обработчики (для неавторизованных)
+handlers := ConnectionHandlers[Message]{
+    OnRead: func(ctx context.Context, c *Connection[Message], msg Message) {
+        // Проверяем авторизацию
+        if c.GetUserData() == nil {
+            if msg.Type == "AUTH" && validateAuth(msg.Data) {
+                c.SetUserData("authorized")
+                c.SetHandlers(authorizedHandlers) // Меняем обработчики
+                c.Write(ctx, Message{Type: "AUTH_OK"})
+            } else {
+                c.Write(ctx, Message{Type: "AUTH_REQUIRED"})
             }
-        },
-    }
-})
+        }
+    },
+}
+
+done, err := server.Start(ctx, parser, handlers, nil)
 ```
 
 ### Пользовательские данные

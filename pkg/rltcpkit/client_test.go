@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,25 +13,30 @@ import (
 )
 
 func newConsoleLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}
+	return slog.New(slog.NewTextHandler(os.Stdout, opts))
 }
 
 // TestClientConnect проверяет успешное подключение клиента к серверу.
 func TestClientConnect(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{
-			OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
-				// Echo server
-				_ = c.Write(ctx, data)
-			},
-		}
-	})
+
+	echoHandlers := ConnectionHandlers[[]byte]{
+		OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
+			// Echo server
+			_ = c.Write(ctx, data)
+		},
+	}
+
+	serverDone, err := server.Start(context.Background(), parser, echoHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
@@ -45,6 +50,7 @@ func TestClientConnect(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectEnabled: false,
 		Logger:           newConsoleLogger(),
+		LogLevel:         LogLevelDebug3,
 	})
 
 	var connected atomic.Bool
@@ -84,18 +90,20 @@ func TestClientConnect(t *testing.T) {
 func TestClientWriteRead(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{
-			OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
-				// Echo server
-				_ = c.Write(ctx, data)
-			},
-		}
-	})
+
+	echoHandlers := ConnectionHandlers[[]byte]{
+		OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
+			// Echo server
+			_ = c.Write(ctx, data)
+		},
+	}
+
+	serverDone, err := server.Start(context.Background(), parser, echoHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
@@ -109,6 +117,7 @@ func TestClientWriteRead(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectEnabled: false,
 		Logger:           newConsoleLogger(),
+		LogLevel:         LogLevelDebug3,
 	})
 
 	var receivedData []byte
@@ -166,13 +175,13 @@ func TestClientWriteRead(t *testing.T) {
 func TestClientDisconnect(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{}
-	})
+	emptyHandlers := ConnectionHandlers[[]byte]{}
+	serverDone, err := server.Start(context.Background(), parser, emptyHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
@@ -186,6 +195,7 @@ func TestClientDisconnect(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectEnabled: false,
 		Logger:           newConsoleLogger(),
+		LogLevel:         LogLevelDebug3,
 	})
 
 	var disconnected atomic.Bool
@@ -240,13 +250,13 @@ func TestClientDisconnect(t *testing.T) {
 func TestClientReconnect(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{}
-	})
+	emptyHandlers := ConnectionHandlers[[]byte]{}
+	serverDone, err := server.Start(context.Background(), parser, emptyHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
@@ -261,6 +271,7 @@ func TestClientReconnect(t *testing.T) {
 		ReconnectBaseDelay:   100 * time.Millisecond,
 		ReconnectMaxDelay:    1 * time.Second,
 		Logger:               newConsoleLogger(),
+		LogLevel:             LogLevelDebug3,
 	})
 
 	var connectedCount atomic.Int32
@@ -322,11 +333,10 @@ func TestClientReconnect(t *testing.T) {
 
 	// Запускаем сервер снова
 	server = NewServer[[]byte](serverAddr, Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
-	serverDone, err = server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{}
-	})
+	serverDone, err = server.Start(context.Background(), parser, emptyHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to restart server: %v", err)
 	}
@@ -352,13 +362,13 @@ func TestClientReconnect(t *testing.T) {
 func TestClientMaxReconnectAttempts(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{}
-	})
+	emptyHandlers := ConnectionHandlers[[]byte]{}
+	serverDone, err := server.Start(context.Background(), parser, emptyHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
@@ -373,6 +383,7 @@ func TestClientMaxReconnectAttempts(t *testing.T) {
 		ReconnectBaseDelay:   100 * time.Millisecond,
 		ReconnectMaxDelay:    500 * time.Millisecond,
 		Logger:               newConsoleLogger(),
+		LogLevel:             LogLevelDebug3,
 	})
 
 	var reconnectingCount atomic.Int32
@@ -438,13 +449,13 @@ func TestClientMaxReconnectAttempts(t *testing.T) {
 func TestClientContextCancellation(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{}
-	})
+	emptyHandlers := ConnectionHandlers[[]byte]{}
+	serverDone, err := server.Start(context.Background(), parser, emptyHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
@@ -458,6 +469,7 @@ func TestClientContextCancellation(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectEnabled: false,
 		Logger:           newConsoleLogger(),
+		LogLevel:         LogLevelDebug3,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -506,6 +518,7 @@ func TestClientWriteNotConnected(t *testing.T) {
 	client := NewClient[[]byte]("localhost:9999", ClientConfig{
 		ConnectTimeout: 5 * time.Second,
 		Logger:         newConsoleLogger(),
+		LogLevel:       LogLevelDebug3,
 	})
 
 	err := client.Write(context.Background(), []byte("test"))
@@ -521,6 +534,7 @@ func TestClientConnectTimeout(t *testing.T) {
 		ConnectTimeout:   100 * time.Millisecond,
 		ReconnectEnabled: false,
 		Logger:           newConsoleLogger(),
+		LogLevel:         LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
@@ -558,13 +572,13 @@ func TestClientConnectTimeout(t *testing.T) {
 func TestClientGetConnection(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{}
-	})
+	emptyHandlers := ConnectionHandlers[[]byte]{}
+	serverDone, err := server.Start(context.Background(), parser, emptyHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
@@ -578,6 +592,7 @@ func TestClientGetConnection(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectEnabled: false,
 		Logger:           newConsoleLogger(),
+		LogLevel:         LogLevelDebug3,
 	})
 
 	// Проверяем что соединения нет
@@ -623,13 +638,13 @@ func TestClientGetConnection(t *testing.T) {
 func TestClientAlreadyStarted(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{}
-	})
+	emptyHandlers := ConnectionHandlers[[]byte]{}
+	serverDone, err := server.Start(context.Background(), parser, emptyHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
@@ -643,6 +658,7 @@ func TestClientAlreadyStarted(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectEnabled: false,
 		Logger:           newConsoleLogger(),
+		LogLevel:         LogLevelDebug3,
 	})
 
 	clientDone, err := client.Start(context.Background(), parser, ClientHandlers[[]byte]{})
@@ -665,18 +681,20 @@ func TestClientAlreadyStarted(t *testing.T) {
 func TestClientServerDisconnect(t *testing.T) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{
-			OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
-				// Закрываем соединение при получении данных
-				_ = c.Close(true)
-			},
-		}
-	})
+
+	closeHandlers := ConnectionHandlers[[]byte]{
+		OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
+			// Закрываем соединение при получении данных
+			_ = c.Close(true)
+		},
+	}
+
+	serverDone, err := server.Start(context.Background(), parser, closeHandlers, nil)
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
 	}
@@ -689,6 +707,7 @@ func TestClientServerDisconnect(t *testing.T) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectEnabled: false,
 		Logger:           newConsoleLogger(),
+		LogLevel:         LogLevelDebug3,
 	})
 
 	var disconnectOccurred atomic.Bool
@@ -749,17 +768,19 @@ waitLoop:
 func BenchmarkClientWriteRead(b *testing.B) {
 	// Создаем сервер
 	server := NewServer[[]byte](":0", Config{
-		Logger: newConsoleLogger(),
+		Logger:   newConsoleLogger(),
+		LogLevel: LogLevelDebug3,
 	})
 
 	parser := NewByteParser()
-	serverDone, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{
-			OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
-				_ = c.Write(ctx, data)
-			},
-		}
-	})
+
+	benchHandlers := ConnectionHandlers[[]byte]{
+		OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
+			_ = c.Write(ctx, data)
+		},
+	}
+
+	serverDone, err := server.Start(context.Background(), parser, benchHandlers, nil)
 	if err != nil {
 		b.Fatalf("Failed to start server: %v", err)
 	}
@@ -773,6 +794,7 @@ func BenchmarkClientWriteRead(b *testing.B) {
 		ConnectTimeout:   5 * time.Second,
 		ReconnectEnabled: false,
 		Logger:           newConsoleLogger(),
+		LogLevel:         LogLevelDebug3,
 	})
 
 	receivedCh := make(chan struct{}, b.N)
@@ -822,6 +844,7 @@ func ExampleClient() {
 		MaxReconnectAttempts: 5,
 		ReconnectBaseDelay:   1 * time.Second,
 		ReconnectMaxDelay:    30 * time.Second,
+		LogLevel:             LogLevelDebug3,
 	})
 
 	// Подключаемся к серверу

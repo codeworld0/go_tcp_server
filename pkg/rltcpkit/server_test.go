@@ -2,30 +2,31 @@ package rltcpkit
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net"
+	"os"
 	"testing"
 	"time"
 )
 
 // TestServerStartStop проверяет базовый запуск и остановку сервера
 func TestServerStartStop(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
+		LogLevel:       LogLevelDebug3,
 	}
 
 	server := NewServer[[]byte](":0", config) // :0 = случайный порт
 	server.SetGracefulTimeout(1 * time.Second)
 
 	parser := NewByteParser()
+	handlers := ConnectionHandlers[[]byte]{}
 
 	// Запускаем сервер
-	done, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{}
-	})
+	done, err := server.Start(context.Background(), parser, handlers, nil)
 
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
@@ -51,10 +52,12 @@ func TestServerStartStop(t *testing.T) {
 
 // TestServerConnection проверяет подключение к серверу
 func TestServerConnection(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
+		LogLevel:       LogLevelDebug3,
 	}
 
 	server := NewServer[[]byte](":0", config)
@@ -64,10 +67,13 @@ func TestServerConnection(t *testing.T) {
 	// Канал для уведомления о подключении
 	connected := make(chan bool, 1)
 
-	_, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		connected <- true
-		return ConnectionHandlers[[]byte]{}
-	})
+	handlers := ConnectionHandlers[[]byte]{
+		OnConnected: func(ctx context.Context, conn *Connection[[]byte]) {
+			connected <- true
+		},
+	}
+
+	_, err := server.Start(context.Background(), parser, handlers, nil)
 
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
@@ -98,23 +104,25 @@ func TestServerConnection(t *testing.T) {
 
 // TestServerEcho проверяет эхо-функциональность
 func TestServerEcho(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
+		LogLevel:       LogLevelDebug3,
 	}
 
 	server := NewServer[[]byte](":0", config)
 	server.SetGracefulTimeout(1 * time.Second)
 	parser := NewByteParser()
 
-	_, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{
-			OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
-				c.Write(ctx, data) // Echo
-			},
-		}
-	})
+	handlers := ConnectionHandlers[[]byte]{
+		OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
+			c.Write(ctx, data) // Echo
+		},
+	}
+
+	_, err := server.Start(context.Background(), parser, handlers, nil)
 
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
@@ -152,19 +160,21 @@ func TestServerEcho(t *testing.T) {
 
 // TestServerMaxConnections проверяет ограничение максимального количества подключений
 func TestServerMaxConnections(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	config := Config{
 		MaxConnections: 2, // Только 2 подключения
 		Logger:         logger,
+		LogLevel:       LogLevelDebug3,
 	}
 
 	server := NewServer[[]byte](":0", config)
 	server.SetGracefulTimeout(1 * time.Second)
 	parser := NewByteParser()
 
-	_, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{}
-	})
+	handlers := ConnectionHandlers[[]byte]{}
+
+	_, err := server.Start(context.Background(), parser, handlers, nil)
 
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
@@ -208,8 +218,8 @@ func TestServerMaxConnections(t *testing.T) {
 	}
 }
 
-// TestByteParser проверяет работу ByteParser
-func TestByteParser(t *testing.T) {
+// TestServerByteParser проверяет работу ByteParser
+func TestServerByteParser(t *testing.T) {
 	parser := NewByteParser()
 
 	// Создаем пару соединений
@@ -239,12 +249,14 @@ func TestByteParser(t *testing.T) {
 	}
 }
 
-// TestConnectionUserData проверяет работу с пользовательскими данными
-func TestConnectionUserData(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+// TestServerConnectionUserData проверяет работу с пользовательскими данными
+func TestServerConnectionUserData(t *testing.T) {
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
+		LogLevel:       LogLevelDebug3,
 	}
 
 	server := NewServer[[]byte](":0", config)
@@ -253,17 +265,19 @@ func TestConnectionUserData(t *testing.T) {
 
 	userDataSet := make(chan bool, 1)
 
-	_, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		// Устанавливаем пользовательские данные
-		conn.SetUserData("test-user-data")
+	handlers := ConnectionHandlers[[]byte]{
+		OnConnected: func(ctx context.Context, conn *Connection[[]byte]) {
+			// Устанавливаем пользовательские данные
+			conn.SetUserData("test-user-data")
 
-		// Проверяем, что данные установлены
-		if conn.GetUserData() == "test-user-data" {
-			userDataSet <- true
-		}
+			// Проверяем, что данные установлены
+			if conn.GetUserData() == "test-user-data" {
+				userDataSet <- true
+			}
+		},
+	}
 
-		return ConnectionHandlers[[]byte]{}
-	})
+	_, err := server.Start(context.Background(), parser, handlers, nil)
 
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
@@ -287,12 +301,14 @@ func TestConnectionUserData(t *testing.T) {
 	}
 }
 
-// TestGracefulShutdown проверяет корректность graceful shutdown с новой архитектурой
-func TestGracefulShutdown(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+// TestServerGracefulShutdown проверяет корректность graceful shutdown с новой архитектурой
+func TestServerGracefulShutdown(t *testing.T) {
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
+		LogLevel:       LogLevelDebug3,
 	}
 
 	server := NewServer[[]byte](":0", config)
@@ -302,20 +318,20 @@ func TestGracefulShutdown(t *testing.T) {
 	onStopCalled := make(chan bool, 1)
 	onClosedCalled := make(chan bool, 1)
 
-	_, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{
-			OnStop: func(c *Connection[[]byte]) {
-				// OnStop вызывается при graceful shutdown
-				onStopCalled <- true
-				// Симулируем какую-то работу при shutdown
-				time.Sleep(200 * time.Millisecond)
-			},
-			OnClosed: func(c *Connection[[]byte]) {
-				// OnClosed вызывается после полного закрытия
-				onClosedCalled <- true
-			},
-		}
-	})
+	handlers := ConnectionHandlers[[]byte]{
+		OnStop: func(c *Connection[[]byte]) {
+			// OnStop вызывается при graceful shutdown
+			onStopCalled <- true
+			// Симулируем какую-то работу при shutdown
+			time.Sleep(200 * time.Millisecond)
+		},
+		OnClosed: func(c *Connection[[]byte]) {
+			// OnClosed вызывается после полного закрытия
+			onClosedCalled <- true
+		},
+	}
+
+	_, err := server.Start(context.Background(), parser, handlers, nil)
 
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
@@ -362,12 +378,14 @@ func TestGracefulShutdown(t *testing.T) {
 	}
 }
 
-// TestEventLoopHandlesAllEvents проверяет что eventLoop обрабатывает все события корректно
-func TestEventLoopHandlesAllEvents(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+// TestServerEventLoopHandlesAllEvents проверяет что eventLoop обрабатывает все события корректно
+func TestServerEventLoopHandlesAllEvents(t *testing.T) {
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
 	config := Config{
 		MaxConnections: 10,
 		Logger:         logger,
+		LogLevel:       LogLevelDebug3,
 	}
 
 	server := NewServer[[]byte](":0", config)
@@ -377,18 +395,18 @@ func TestEventLoopHandlesAllEvents(t *testing.T) {
 	onReadCalled := make(chan bool, 1)
 	onErrorCalled := make(chan bool, 1)
 
-	_, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-		return ConnectionHandlers[[]byte]{
-			OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
-				onReadCalled <- true
-				// Симулируем ошибку после первого чтения
-				c.Close(true)
-			},
-			OnError: func(c *Connection[[]byte], err error) {
-				onErrorCalled <- true
-			},
-		}
-	})
+	handlers := ConnectionHandlers[[]byte]{
+		OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
+			onReadCalled <- true
+			// Симулируем ошибку после первого чтения
+			c.Close(true)
+		},
+		OnError: func(c *Connection[[]byte], err error) {
+			onErrorCalled <- true
+		},
+	}
+
+	_, err := server.Start(context.Background(), parser, handlers, nil)
 
 	if err != nil {
 		t.Fatalf("Failed to start server: %v", err)
@@ -424,5 +442,93 @@ func TestEventLoopHandlesAllEvents(t *testing.T) {
 	// Проверяем что счетчик подключений обновился (cleanup был вызван из eventLoop)
 	if server.GetConnectionCount() != 0 {
 		t.Errorf("Expected 0 connections after close, got %d", server.GetConnectionCount())
+	}
+}
+
+// TestServerContextCancellation проверяет корректную остановку сервера при отмене контекста
+func TestServerContextCancellation(t *testing.T) {
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
+	config := Config{
+		MaxConnections: 10,
+		Logger:         logger,
+		LogLevel:       LogLevelDebug3,
+	}
+
+	server := NewServer[[]byte](":0", config)
+	server.SetGracefulTimeout(2 * time.Second)
+	parser := NewByteParser()
+
+	onStopCalled := make(chan bool, 1)
+	onClosedCalled := make(chan bool, 1)
+
+	handlers := ConnectionHandlers[[]byte]{
+		OnStop: func(c *Connection[[]byte]) {
+			onStopCalled <- true
+		},
+		OnClosed: func(c *Connection[[]byte]) {
+			onClosedCalled <- true
+		},
+	}
+
+	// Создаем контекст с возможностью отмены
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done, err := server.Start(ctx, parser, handlers, nil)
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+
+	// Подключаемся к серверу
+	addr := server.GetAddress()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	// Даем время на установку соединения
+	time.Sleep(100 * time.Millisecond)
+
+	// Проверяем, что соединение активно
+	if server.GetConnectionCount() != 1 {
+		t.Errorf("Expected 1 connection, got %d", server.GetConnectionCount())
+	}
+
+	// Отменяем контекст
+	cancel()
+
+	// Проверяем что OnStop был вызван
+	select {
+	case <-onStopCalled:
+		// OK
+	case <-time.After(3 * time.Second):
+		t.Error("Timeout waiting for OnStop to be called after context cancellation")
+	}
+
+	// Проверяем что OnClosed был вызван после OnStop
+	select {
+	case <-onClosedCalled:
+		// OK
+	case <-time.After(3 * time.Second):
+		t.Error("Timeout waiting for OnClosed to be called after context cancellation")
+	}
+
+	// Проверяем что канал done закрылся
+	select {
+	case <-done:
+		// OK
+	case <-time.After(3 * time.Second):
+		t.Error("Timeout waiting for done channel to close after context cancellation")
+	}
+
+	// Проверяем что сервер остановился
+	if server.IsRunning() {
+		t.Error("Server should not be running after context cancellation")
+	}
+
+	// Проверяем что счетчик подключений обновился
+	if server.GetConnectionCount() != 0 {
+		t.Errorf("Expected 0 connections after context cancellation, got %d", server.GetConnectionCount())
 	}
 }

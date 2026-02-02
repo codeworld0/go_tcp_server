@@ -74,7 +74,8 @@ type Server[T any] struct {
 	connCount   atomic.Int64   // счётчик для GetConnectionCount()
 
 	// Обработчики
-	onAccept func(*Connection[T]) ConnectionHandlers[T]
+	handlers ConnectionHandlers[T]
+	onAccept func(string) bool
 	parser   ProtocolParser[T]
 
 	// Logger
@@ -129,28 +130,33 @@ func (s *Server[T]) SetGracefulTimeout(timeout time.Duration) {
 // Параметры:
 //   - ctx: контекст для управления жизненным циклом сервера (при завершении сервер автоматически останавливается)
 //   - parser: парсер протокола для чтения и записи пакетов
-//   - onAccept: функция, вызываемая при новом подключении для получения обработчиков
+//   - handlers: обработчики событий для всех соединений
+//   - onAccept: опциональная функция для валидации подключений перед их принятием (может быть nil)
 //
 // Возвращает:
 //   - <-chan struct{}: канал, который закрывается при полной остановке сервера
 //   - error: ошибка запуска или nil при успехе
 //
 // Метод создает listener и запускает горутину для принятия подключений.
-// Для каждого нового подключения вызывается onAccept, который должен вернуть
-// набор обработчиков для этого соединения.
+// Для каждого нового подключения сначала вызывается onAccept (если установлен) для проверки,
+// можно ли принять соединение. Если onAccept возвращает false, соединение отклоняется.
+// Если onAccept возвращает true или равен nil, создается объект Connection с переданными handlers.
 //
 // При завершении переданного контекста, сервер автоматически вызывает Stop()
 // с использованием graceful shutdown timeout (установленного через SetGracefulTimeout).
 //
 // Пример:
 //
-//	done, err := server.Start(context.Background(), parser, func(conn *Connection[[]byte]) ConnectionHandlers[[]byte] {
-//	    return ConnectionHandlers[[]byte]{
-//	        OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
-//	            c.Write(data) // echo
-//	        },
-//	    }
-//	})
+//	handlers := ConnectionHandlers[[]byte]{
+//	    OnRead: func(ctx context.Context, c *Connection[[]byte], data []byte) {
+//	        c.Write(ctx, data) // echo
+//	    },
+//	}
+//	onAccept := func(remoteAddr string) bool {
+//	    // Проверяем IP, rate limits и т.д.
+//	    return true // разрешаем подключение
+//	}
+//	done, err := server.Start(context.Background(), parser, handlers, onAccept)
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
@@ -158,7 +164,8 @@ func (s *Server[T]) SetGracefulTimeout(timeout time.Duration) {
 func (s *Server[T]) Start(
 	ctx context.Context,
 	parser ProtocolParser[T],
-	onAccept func(*Connection[T]) ConnectionHandlers[T],
+	handlers ConnectionHandlers[T],
+	onAccept func(string) bool,
 ) (<-chan struct{}, error) {
 	if s.running.Load() {
 		return nil, ErrServerAlreadyStarted
@@ -167,6 +174,7 @@ func (s *Server[T]) Start(
 	var startErr error
 	s.startOnce.Do(func() {
 		s.parser = parser
+		s.handlers = handlers
 		s.onAccept = onAccept
 
 		// Создаем дочерний контекст
@@ -257,12 +265,19 @@ func (s *Server[T]) contextMonitor() {
 
 // handleConnection обрабатывает новое подключение.
 func (s *Server[T]) handleConnection(conn net.Conn) {
+	// Вызываем onAccept для валидации подключения ДО создания Connection
+	if s.onAccept != nil {
+		remoteAddr := conn.RemoteAddr().String()
+		if !s.onAccept(remoteAddr) {
+			s.logger.Warn("Connection rejected by onAccept", "remote_addr", remoteAddr)
+			conn.Close()
+			return
+		}
+	}
+
 	// Увеличиваем WaitGroup и счетчик подключений
 	s.connWg.Add(1)
 	s.connCount.Add(1)
-
-	// Создаем временные обработчики для получения реальных от onAccept
-	var handlers ConnectionHandlers[T]
 
 	// Объявляем переменную для connection
 	var connection *Connection[T]
@@ -281,25 +296,22 @@ func (s *Server[T]) handleConnection(conn net.Conn) {
 		s.logger.Info("Connection closed", "conn_id", connection.id, "remote_addr", conn.RemoteAddr())
 	}
 
-	// Создаем объект Connection
+	// Создаем объект Connection с handlers
 	connection = newConnection(
 		conn,
 		s.parser,
-		handlers,
+		s.handlers,
 		s.logger,
 		s.config.LogLevel,
 		s.ctx,
 		cleanupFunc,
 	)
 
-	// Добавляем соединение в карту активных соединений
+	// Добавляем соединение в карту активных соединений ПЕРЕД запуском eventLoop
 	s.connections.Store(connection, struct{}{})
 
-	// Вызываем onAccept для получения обработчиков
-	if s.onAccept != nil {
-		handlers = s.onAccept(connection)
-		connection.SetHandlers(handlers)
-	}
+	// Запускаем обработку событий соединения
+	connection.Start()
 }
 
 // Stop останавливает TCP сервер с graceful shutdown.

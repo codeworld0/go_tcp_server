@@ -216,6 +216,9 @@ func (c *Client[T]) Start(
 		// Запускаем горутину управления жизненным циклом
 		c.mainWg.Add(1)
 		go c.connectionLoop()
+
+		// Запускаем монитор контекста для автоматической остановки
+		go c.contextMonitor()
 	})
 
 	return c.done, nil
@@ -265,6 +268,8 @@ func (c *Client[T]) connect() error {
 	// Создаем Connection с cleanupFunc
 	c.mu.Lock()
 	c.conn = newConnection(conn, c.parser, connectionHandlers, c.logger, c.config.LogLevel, c.ctx, cleanupFunc)
+	// Запускаем обработку событий после регистрации соединения
+	c.conn.Start()
 	c.mu.Unlock()
 	return nil
 }
@@ -359,7 +364,7 @@ func (c *Client[T]) connectionLoop() {
 	for {
 		select {
 		case <-c.ctx.Done():
-			c.logger.Info("Context cancelled, stopping client")
+			c.logger.Info("Context cancelled, stopping connection loop")
 			return
 
 		case <-c.reconnectCh:
@@ -450,6 +455,13 @@ func (c *Client[T]) calculateReconnectDelay(attempt int) time.Duration {
 	}
 
 	return time.Duration(delay)
+}
+
+// contextMonitor отслеживает завершение контекста и автоматически останавливает клиент.
+func (c *Client[T]) contextMonitor() {
+	<-c.ctx.Done()
+	c.logger.Info("Context cancelled, stopping client")
+	_ = c.Stop()
 }
 
 // Stop останавливает TCP клиент с graceful shutdown.

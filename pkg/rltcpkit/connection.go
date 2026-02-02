@@ -50,6 +50,7 @@ type Connection[T any] struct {
 	closed        atomic.Bool
 	closeOnce     sync.Once
 	readCloseOnce sync.Once
+	startOnce     sync.Once     // для защиты от повторных вызовов Start()
 	shutdownCh    chan struct{} // канал для сигнала graceful shutdown
 
 	// cleanupFunc вызывается когда соединение завершается (из eventLoop)
@@ -93,10 +94,16 @@ func newConnection[T any](
 	// Инициализируем atomic.Value для handlers и userData
 	c.handlers.Store(handlers)
 
-	// Запускаем только главный eventLoop, который управляет остальными горутинами
-	go c.eventLoop()
-
 	return c
+}
+
+// Start запускает обработку событий соединения.
+// Должен быть вызван ровно один раз после создания соединения через newConnection.
+// Метод потокобезопасен и защищен от повторных вызовов.
+func (c *Connection[T]) Start() {
+	c.startOnce.Do(func() {
+		go c.eventLoop()
+	})
 }
 
 // shouldLog проверяет, нужно ли логировать debug сообщение на данном уровне.
@@ -128,14 +135,14 @@ func (c *Connection[T]) readGoroutine() {
 			c.logger.Debug("Read loop closed", "conn_id", c.id, "remote_addr", c.RemoteAddr())
 		}
 	}()
-
 	for {
 		select {
 		case <-c.ctx.Done():
+			c.logger.Debug("Test context closed", "conn_id", c.id, "remote_addr", c.RemoteAddr())
 			return
 		default:
 		}
-
+		
 		packet, err := c.parser.ReadPacket(c.ctx, c.conn)
 		if err != nil {
 			// EOF - нормальное завершение соединения, закрываемся без ошибок
